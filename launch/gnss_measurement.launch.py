@@ -38,6 +38,7 @@ def generate_launch_description():
     loc_map_yaml_file = LaunchConfiguration('loc_map')
     nav_map_yaml_file = LaunchConfiguration('nav_map')
     params_file = LaunchConfiguration('params_file')
+    emcl2_params_file = LaunchConfiguration('emcl2_params_file')
     container_name = LaunchConfiguration('container_name')
     use_respawn = LaunchConfiguration('use_respawn')
     log_level = LaunchConfiguration('log_level')
@@ -74,6 +75,12 @@ def generate_launch_description():
         default_value=os.path.join(
             get_package_share_directory('gnss2map'),
                 'config', 'params', 'gauss_kruger.param.yaml'),
+                description='Full path to the ROS2 parameters file to use for all launched nodes')
+    declare_emcl2_params_file = DeclareLaunchArgument(
+        'emcl2_params_file',
+        default_value=os.path.join(
+            get_package_share_directory('gnss2map'),
+                'config', 'params', 'emcl2.param.yaml'),
                 description='Full path to the ROS2 parameters file to use for all launched nodes')
     declare_container_name = DeclareLaunchArgument(
         'container_name', default_value='nav2_container',
@@ -127,7 +134,7 @@ def generate_launch_description():
                 respawn_delay=2.0,
                 parameters=[configured_params, {"yaml_filename": loc_map_yaml_file}],
                 arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings+[('map', '/map/localization')]),
+                remappings=remappings),
             Node(
                 package='nav2_lifecycle_manager',
                 executable='lifecycle_manager',
@@ -136,7 +143,15 @@ def generate_launch_description():
                 arguments=['--ros-args', '--log-level', log_level],
                 parameters=[{'use_sim_time': use_sim_time},
                             {'autostart': autostart},
-                            {'node_names': lifecycle_nodes}]),
+                            {'node_names': lifecycle_nodes}]), 
+            Node(
+                name='emcl2',
+                package='emcl2',
+                executable='emcl2_node',
+                parameters=[emcl2_params_file],
+                output='screen', 
+                # remappings=[('map', emcl2_map_topic)]
+                ),
         ]
     )
 
@@ -180,6 +195,7 @@ def generate_launch_description():
     ld.add_action(declare_use_respawn)
     ld.add_action(declare_autostart)
     ld.add_action(declare_params_file)
+    ld.add_action(declare_emcl2_params_file)
     ld.add_action(declare_log_level)
     ld.add_action(declare_arg_use_rviz)
 

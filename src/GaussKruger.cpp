@@ -136,8 +136,8 @@ namespace gnss2map
         p(0) = p(0) * A_bar_ - S_bar_phi0_;
         p(1) *= A_bar_;
         p = K_ * R_ * p;
-        x = p(0) + p0_[0];
-        y = -p(1) + p0_[1];
+        x = p(0) + p0_[0] - 3.0;
+        y = -p(1) + p0_[1] + 3.0;
     }
 
     // void GaussKruger::pubOdomGnss(double x, double y, double z)
