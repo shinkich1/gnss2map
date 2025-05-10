@@ -1,91 +1,120 @@
+// GnssPoser.cpp
 // SPDX-FileCopyrightText: 2024 MakotoYoshigoe
 // SPDX-License-Identifier: Apache-2.0
 
-#include "gnss2map/GnssPoser.hpp"
+#include <rclcpp/rclcpp.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp> // 修正: 非推奨ヘッダーを置き換え
+#include <cmath>
+#include <string>
 
-namespace gnss2map
-{
-    GnssPoser::GnssPoser() : Node("gnss_poser")
-    {
-        declare_params();
-        init_pub_sub();
-    }
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
-    GnssPoser::~GnssPoser(){}
+namespace gnss2map {
 
-    void GnssPoser::declare_params(void)
-    {
-        declare_parameter("frame_id", "map");
-        get_parameter("frame_id", frame_id_);
-        declare_parameter("pub_rate", 10.0);
-        get_parameter("pub_rate", pub_rate_);
-        ekf_first_receive_ = false;
-    }
+class GnssPoser : public rclcpp::Node {
+public:
+  GnssPoser()
+  : Node("gnss_poser")
+  {
+    // Declare and get parameters
+    declare_parameter<std::string>("frame_id", "map");
+    declare_parameter<double>("pub_rate", 10.0);
+    declare_parameter<double>("calibration_yaw_offset", 0.0);
+    get_parameter("frame_id", frame_id_);
+    get_parameter("pub_rate", pub_rate_);
+    get_parameter("calibration_yaw_offset", calibration_offset_);
+    first_receive_ = false;
+    initPubSub();
+  }
 
-    void GnssPoser::init_pub_sub(void)
-    {
-        pub_gnss_ekf_pose_with_covariance_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("gnss_ekf_pose_with_covariance", 2);
-        sub_gnss_pose_with_covariance_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-            "gnss_pose_with_covariance", 2, std::bind(&GnssPoser::gnss_pose_callback, this, std::placeholders::_1)
-        );
-        sub_ekf_pose_with_covariance_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-            "ekf_pose_with_covariance", 2, std::bind(&GnssPoser::ekf_pose_callback, this, std::placeholders::_1)
-        );
+  // 修正: loop()をpublicに移動
+  void loop() {
+    if (!first_receive_) return;
+    // Prepare header
+    robot_pose_.header.frame_id = frame_id_;
+    robot_pose_.header.stamp = now();
+    // Copy 2D position & covariance
+    robot_pose_.pose.pose.position = incoming2d_.pose.pose.position;
+    robot_pose_.pose.covariance.fill(0.0);
+    robot_pose_.pose.covariance[0] = incoming2d_.pose.covariance[0];
+    robot_pose_.pose.covariance[7] = incoming2d_.pose.covariance[7];
+    // Convert EUN to ENU
+    const auto &qin = incoming3d_.pose.pose.orientation;
+    tf2::Quaternion qEun(qin.x, qin.y, qin.z, qin.w);
+    tf2::Quaternion qEunToEnu; qEunToEnu.setRPY(M_PI/2.0, 0.0, 0.0);
+    tf2::Quaternion qEnu = qEunToEnu * qEun;
+    // Extract yaw
+    double roll, pitch, yaw;
+    tf2::Matrix3x3(qEnu).getRPY(roll, pitch, yaw);
+    yaw = std::atan2(std::sin(yaw), std::cos(yaw));
+    // Apply calibration offset
+    yaw += calibration_offset_;
+    // Rebuild 2D quaternion
+    tf2::Quaternion q2d; q2d.setRPY(0.0, 0.0, yaw);
+    robot_pose_.pose.pose.orientation.x = q2d.x();
+    robot_pose_.pose.pose.orientation.y = q2d.y();
+    robot_pose_.pose.pose.orientation.z = q2d.z();
+    robot_pose_.pose.pose.orientation.w = q2d.w();
+    // Publish
+    pub_robot_pose_->publish(robot_pose_);
+  }
 
-    }
+protected:
+  void pose2dCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr &msg) {
+    incoming2d_ = *msg;
+    first_receive_ = true;
+  }
 
-    void GnssPoser::gnss_pose_callback(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
-    {
-        gnss_pose_with_covariance_ = *msg;
-    }
+  void vpsPoseCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr &msg) {
+    incoming3d_ = *msg;
+  }
 
-    void GnssPoser::ekf_pose_callback(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
-    {
-        if(!ekf_first_receive_) ekf_first_receive_ = true;
-        ekf_pose_with_covariance_ = *msg;
-    }
+protected: // 修正: robot_pose_をprotectedに変更
+  geometry_msgs::msg::PoseWithCovarianceStamped robot_pose_;
 
-    void GnssPoser::set_gnss_info()
-    {
-        gnss_ekf_pose_with_covariance_.pose.pose.position = gnss_pose_with_covariance_.pose.pose.position;
-        gnss_ekf_pose_with_covariance_.pose.covariance[0] = gnss_pose_with_covariance_.pose.covariance[0];
-        gnss_ekf_pose_with_covariance_.pose.covariance[7] = gnss_pose_with_covariance_.pose.covariance[7];
-        gnss_ekf_pose_with_covariance_.pose.covariance[14] = gnss_pose_with_covariance_.pose.covariance[14];
-    }
+private:
+  // Setup subscriptions & publishers
+  void initPubSub() {
+    sub_pose2d_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+      "vps/pose_2d", 10,
+      std::bind(&GnssPoser::pose2dCallback, this, std::placeholders::_1)
+    );
+    sub_pose_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+      "vps/pose", 10,
+      std::bind(&GnssPoser::vpsPoseCallback, this, std::placeholders::_1)
+    );
+    pub_robot_pose_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+      "robot_pose", 10
+    );
+  }
 
-    void GnssPoser::set_ekf_info()
-    {
-        gnss_ekf_pose_with_covariance_.pose.pose.orientation = ekf_pose_with_covariance_.pose.pose.orientation;
-        gnss_ekf_pose_with_covariance_.pose.covariance[21] = ekf_pose_with_covariance_.pose.covariance[21];
-        gnss_ekf_pose_with_covariance_.pose.covariance[28] = ekf_pose_with_covariance_.pose.covariance[28];
-        gnss_ekf_pose_with_covariance_.pose.covariance[35] = ekf_pose_with_covariance_.pose.covariance[35];
-    }
+  // Parameters & state
+  std::string frame_id_;
+  double pub_rate_, calibration_offset_;
+  bool first_receive_;
+  geometry_msgs::msg::PoseWithCovarianceStamped incoming2d_, incoming3d_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr sub_pose2d_, sub_pose_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_robot_pose_;
+};
 
-    double GnssPoser::get_pub_rate(){
-        return pub_rate_;
-    }
+} // namespace gnss2map
 
-    void GnssPoser::loop(void)
-    {
-        if(!ekf_first_receive_) return;
-        gnss_ekf_pose_with_covariance_.header.frame_id = frame_id_;
-        gnss_ekf_pose_with_covariance_.header.stamp = now();
-        set_gnss_info();
-        set_ekf_info();
-        pub_gnss_ekf_pose_with_covariance_->publish(gnss_ekf_pose_with_covariance_);
-    }
+#ifndef UNIT_TEST
+int main(int argc, char **argv) {
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<gnss2map::GnssPoser>();
+  rclcpp::Rate rate(node->get_parameter("pub_rate").as_double());
+  while (rclcpp::ok()) {
+    node->loop(); // 修正: loop()がpublicになったためアクセス可能
+    rclcpp::spin_some(node);
+    rate.sleep();
+  }
+  rclcpp::shutdown();
+  return 0;
 }
-
-int main(int argc, char ** argv)
-{
-    rclcpp::init(argc, argv);
-    auto node = std::make_shared<gnss2map::GnssPoser>();
-    rclcpp::Rate rate(node->get_pub_rate());
-    while(rclcpp::ok()){
-        node->loop();
-        rclcpp::spin_some(node);
-        rate.sleep();
-    }
-    rclcpp::shutdown();
-    return 0;
-}
+#endif
