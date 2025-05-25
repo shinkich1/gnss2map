@@ -20,8 +20,18 @@ ament_auto_add_executable(gauss_kruger_node
   src/GaussKruger.cpp
 )
 
-ament_auto_add_executable(gnss_poser
+ament_auto_add_executable(gnss_poser_node  # 修正: gnss_poser -> gnss_poser_node
   src/GnssPoser.cpp
+)
+
+# GaussKrugerノードのインストール設定
+install(TARGETS gauss_kruger_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# GnssPoserノードのインストール設定
+install(TARGETS gnss_poser_node  # 修正: インストール設定を追加
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)

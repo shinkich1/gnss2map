@@ -50,9 +50,16 @@ namespace gnss2map
 
     void GaussKruger::initPubSub()
     {
-        sub_gnss_ = this->create_subscription<sensor_msgs::msg::NavSatFix>("gnss/fix", 2, std::bind(&GaussKruger::cbGnss, this, std::placeholders::_1));
-        // pub_odom_gnss_ = this->create_publisher<nav_msgs::msg::Odometry>("odom/gnss", 2);
-        pub_gnss_pose_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>("gnss_pose_with_covariance", 2);
+        // VPSトピックの購読
+        sub_vps_fix_ = this->create_subscription<sensor_msgs::msg::NavSatFix>(
+            "vps/fix", 2, std::bind(&GaussKruger::cbVpsFix, this, std::placeholders::_1));
+
+        sub_vps_pose_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+            "vps/pose", 2, std::bind(&GaussKruger::cbVpsPose, this, std::placeholders::_1));
+
+        // 出力トピックのパブリッシャー
+        pub_gnss_pose_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+            "gnss_pose_with_covariance", 2);
     }
 
     void GaussKruger::cbGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
@@ -78,6 +85,53 @@ namespace gnss2map
 			pre_y_ = y;
         }
         pubGnssPose(x, y, z, t, cov[0], cov[4], cov[8]);
+    }
+
+    void GaussKruger::cbVpsFix(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
+    {
+        double rad_phi = msg->latitude * M_PI / 180;  // 緯度をラジアンに変換
+        double rad_lambda = msg->longitude * M_PI / 180;  // 経度をラジアンに変換
+        double x, y;
+
+        // ガウス・クリューゲル変換
+        gaussKruger(rad_phi, rad_lambda, x, y);
+
+        // 高度
+        double z = msg->altitude + offset_z_;
+
+        // 位置を保存
+        current_position_ = {x, y, z};
+    }
+    
+    void GaussKruger::cbVpsPose(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
+    {
+        // VPSからの方位情報（四元数）を取得
+        tf2::Quaternion q(
+            msg->pose.pose.orientation.x,
+            msg->pose.pose.orientation.y,
+            msg->pose.pose.orientation.z,
+            msg->pose.pose.orientation.w);
+
+        // 四元数からyaw（方位角）を取得
+        double roll, pitch, yaw;
+        tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+
+        // VPSの方位をmap座標系に変換
+        double map_yaw = yaw - rad_theta_offset_;
+
+        // 方位角を[-π, π]の範囲に正規化
+        while (map_yaw > M_PI) map_yaw -= 2 * M_PI;
+        while (map_yaw < -M_PI) map_yaw += 2 * M_PI;
+
+        // 方位を保存
+        current_orientation_ = map_yaw;
+
+        // 共分散行列を保存
+        current_covariance_ = msg->pose.covariance;
+
+        // パブリッシュ
+        pubGnssPose(current_position_[0], current_position_[1], current_position_[2],
+                    current_orientation_, current_covariance_[0], current_covariance_[7], current_covariance_[14]);
     }
 
     void GaussKruger::initVariable()
@@ -165,8 +219,9 @@ namespace gnss2map
         pose.pose.pose.orientation.w = q[3];
 
         pose.pose.covariance[0] = dev_x;
-	    pose.pose.covariance[7] = dev_y;
+        pose.pose.covariance[7] = dev_y;
         pose.pose.covariance[14] = dev_z;
+
         pub_gnss_pose_->publish(pose);
     }
 	
