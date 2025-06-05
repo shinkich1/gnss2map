@@ -31,7 +31,7 @@ namespace gnss2map
         this->declare_parameter("a", 6378137.0);
         this->declare_parameter("F", 298.257222);
         this->declare_parameter("m0", 0.9999);
-        this->declare_parameter("ignore_th_cov", 16.0);
+        this->declare_parameter("ignore_th_cov", 1000.0);
         // this->declare_parameter("range_limit", std::vector<double>(4, 0.0));
     }
 
@@ -64,74 +64,77 @@ namespace gnss2map
 
     void GaussKruger::cbGnss(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
     {
-        double covariance = msg->position_covariance[0];
         std::array<double, 9UL> cov = msg->position_covariance;
         RCLCPP_DEBUG(this->get_logger(), "cov (xx, yy): (%lf, %lf)", cov[0], cov[4]);
-        int8_t status = msg->status.status;
         double x, y, z = msg->altitude + offset_z_;
-		double t = 0.;
-        if(covariance > ignore_th_cov_ || status == NO_FIX){
-            x = NAN, y = NAN, z = NAN;
-        } else {
-            double rad_phi = msg->latitude*M_PI/180;
-            double rad_lambda = msg->longitude*M_PI/180;
-            gaussKruger(rad_phi, rad_lambda, x, y);
-			if(!calc_direction_){
-				calc_direction_ = true;
-			}else{
-				t = calcDirection(x, y);
-			}			
-			pre_x_ = x;
-			pre_y_ = y;
+        double t = 0.0;
+
+        // 条件なしで常にパブリッシュ
+        double rad_phi = msg->latitude * M_PI / 180;
+        double rad_lambda = msg->longitude * M_PI / 180;
+        gaussKruger(rad_phi, rad_lambda, x, y);
+        if(!calc_direction_){
+            calc_direction_ = true;
+        }else{
+            t = calcDirection(x, y);
         }
+        pre_x_ = x;
+        pre_y_ = y;
+
         pubGnssPose(x, y, z, t, cov[0], cov[4], cov[8]);
     }
 
+    // 追加: データ受信フラグ
+    bool vps_fix_received_ = false;
+    bool vps_pose_received_ = false;
+
     void GaussKruger::cbVpsFix(sensor_msgs::msg::NavSatFix::ConstSharedPtr msg)
     {
-        double rad_phi = msg->latitude * M_PI / 180;  // 緯度をラジアンに変換
-        double rad_lambda = msg->longitude * M_PI / 180;  // 経度をラジアンに変換
+        double rad_phi = msg->latitude * M_PI / 180;
+        double rad_lambda = msg->longitude * M_PI / 180;
         double x, y;
 
-        // ガウス・クリューゲル変換
         gaussKruger(rad_phi, rad_lambda, x, y);
-
-        // 高度
         double z = msg->altitude + offset_z_;
-
-        // 位置を保存
         current_position_ = {x, y, z};
+        vps_fix_received_ = true;
+
+        // 両方揃ったらパブリッシュ
+        if (vps_pose_received_) {
+            pubGnssPose(
+                current_position_[0], current_position_[1], current_position_[2],
+                current_orientation_,
+                current_covariance_[0], current_covariance_[7], current_covariance_[14]
+            );
+            vps_fix_received_ = false;
+            vps_pose_received_ = false;
+        }
     }
-    
+
     void GaussKruger::cbVpsPose(geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr msg)
     {
-        // VPSからの方位情報（四元数）を取得
         tf2::Quaternion q(
             msg->pose.pose.orientation.x,
             msg->pose.pose.orientation.y,
             msg->pose.pose.orientation.z,
             msg->pose.pose.orientation.w);
 
-        // 四元数からyaw（方位角）を取得
         double roll, pitch, yaw;
         tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
 
-        // VPSの方位をmap座標系に変換
         double map_yaw = yaw - rad_theta_offset_;
-
-        // 方位角を[-π, π]の範囲に正規化
         while (map_yaw > M_PI) map_yaw -= 2 * M_PI;
         while (map_yaw < -M_PI) map_yaw += 2 * M_PI;
 
-        // 方位を保存
         current_orientation_ = map_yaw;
-
-        // 共分散行列を保存
         current_covariance_ = msg->pose.covariance;
 
-        // パブリッシュ
-        pubGnssPose(current_position_[0], current_position_[1], current_position_[2],
-                    current_orientation_, current_covariance_[0], current_covariance_[7], current_covariance_[14]);
+        // 最新の位置情報を使って毎回パブリッシュ
+        pubGnssPose(
+            current_position_[0], current_position_[1], current_position_[2],
+            current_orientation_,
+            current_covariance_[0], current_covariance_[7], current_covariance_[14]
+        );
     }
 
     void GaussKruger::initVariable()
