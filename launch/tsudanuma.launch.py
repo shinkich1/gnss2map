@@ -34,6 +34,7 @@ def generate_launch_description():
         name="gauss_kruger_node", 
         executable="gauss_kruger_node", 
         parameters=[params_file], 
+        remappings=[('gnss/fix', '/vps/fix')],
     )
     
     map_dir = os.path.join(get_package_share_directory('gnss2map'), 'config', 'map')
