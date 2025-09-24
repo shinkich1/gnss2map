@@ -22,7 +22,7 @@ namespace gnss2map
     {
         declare_parameter("frame_id", "map");
         get_parameter("frame_id", frame_id_);
-        declare_parameter("pub_rate", 1.0);
+        declare_parameter("pub_rate", 2.0);
         get_parameter("pub_rate", pub_rate_);
         ekf_first_receive_ = false;
     }
