@@ -20,7 +20,7 @@ namespace gnss2map{
     void correctVpsPosition(double& x, double& y) {
         static const std::vector<RectArea> error_areas = {
             {-1000, -1000, 27, 1183}, {-1000, -1000, 106, 88}, {-1000, -1000, 255, 27},
-            {38, 147, 105, 95}, {114, 146, 128, 92}, {114, 146, 154, 137},
+            {38, 147, 107, 93}, {114, 146, 128, 92}, {114, 146, 154, 137},
             {139, 130, 157, 88}, {157, 84, 111, 45}, {207, 133, 165, 71},
             {241, 39, 1277, 1183}, {-1000, 157, 1277, 1183}
         };
@@ -40,7 +40,7 @@ namespace gnss2map{
                 double max_val = std::max(diff_x, diff_y);
 
                 // 比が2以上なら移動量が小さい方だけ移動
-                if (max_val / min_val >= 1.5) {
+                if (max_val / min_val >= 1.05) {
                     if (diff_x < diff_y) {
                         x = new_x; // xだけ移動
                         // yは変更しない
